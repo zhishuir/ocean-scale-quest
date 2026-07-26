@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>海底音阶之旅 · 发声练习小游戏</title>
+<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="game.css?v=5">
+</head>
+<body class="ocean">
+<div class="bg-glow glow-a"></div>
+<div class="bg-glow glow-b"></div>
+
+<main class="wrap wrap-wide">
+  <header class="hero">
+    <div class="badge">🌊 声乐游戏化训练</div>
+    <h1>海底音阶之旅</h1>
+    <p class="sub">跟着琴音唱 do re mi fa sol la xi，小海豚会游到你唱的音高——把它带到海螺上就能点亮一颗</p>
+  </header>
+
+  <section class="card">
+    <div class="game-toolbar">
+      <div class="seg" id="keySeg">
+        <button class="seg-btn" data-base="130.81">男低 (C3)</button>
+        <button class="seg-btn active" data-base="196.00">中音 (G3)</button>
+        <button class="seg-btn" data-base="261.63">女声 (C4)</button>
+      </div>
+      <div class="game-actions">
+        <button class="btn btn-ghost btn-sm" id="btnDemo"><span class="ico">▶</span>听示范（完整音阶）</button>
+        <button class="btn btn-primary" id="btnPlay"><span class="ico">🎤</span><span id="btnPlayText">开始挑战</span></button>
+      </div>
+    </div>
+
+    <div class="stage-box">
+      <canvas id="stage" width="960" height="480"></canvas>
+      <div class="stage-overlay hidden" id="resultOverlay">
+        <div class="result-pop">
+          <div class="stars" id="stars">★★★</div>
+          <h2 id="resultTitle">恭喜完成！</h2>
+          <p class="hint" id="resultDetail"></p>
+          <div class="preview-actions" style="justify-content:center">
+            <button class="btn btn-primary" id="btnRetry">↻ 再来一次</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="game-status">
+      <div class="status-item">目标：<b id="stTarget">—</b></div>
+      <div class="status-item">你唱的：<b id="stPitch">—</b></div>
+      <div class="status-item">进度：<b id="stProgress">0 / 13</b></div>
+      <div class="status-item">用时：<b id="stTime">0.0s</b></div>
+    </div>
+    <div class="msg hidden" id="msg"></div>
+    <p class="hint" style="margin-top:12px">
+      玩法：点击「开始挑战」并允许麦克风，每一关会自动播放目标音，
+      用 “呜——” 或 “啊——” 跟着唱，小海豚就会游到那个高度，<b>贴住海螺稳住一下</b>即点亮，
+      镜头会随进度向前推进。低八度 / 高八度唱都算对，选一个舒服的音区就好。
+    </p>
+  </section>
+
+  <footer class="foot">声音仅实时分析，不上传、不保存 · 建议佩戴耳机、在安静环境中练习</footer>
+</main>
+
+<script src="game.js?v=5"></script>
+</body>
+</html>

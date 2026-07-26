@@ -1,0 +1,65 @@
+/* 海底音阶之旅 — 海洋主题覆盖（在主样式 style.css 基础上） */
+
+.wrap-wide { max-width: 1020px; }
+
+/* 页面氛围：紫粉 → 海洋蓝青 */
+body.ocean { background: #06182f; }
+body.ocean .glow-a { background: #0e7490; }
+body.ocean .glow-b { background: #1e40af; }
+body.ocean .badge {
+  color: #7dd3fc; border-color: rgba(34, 211, 238, .45);
+  background: rgba(34, 211, 238, .1);
+}
+body.ocean .hero h1 {
+  background: linear-gradient(120deg, #a5f3fc, #7dd3fc 55%, #c7d2fe);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+body.ocean .hint b { color: #67e8f9; }
+body.ocean .btn-primary {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+  box-shadow: 0 6px 24px rgba(59, 130, 246, .4);
+}
+body.ocean .btn-primary:hover:not(:disabled) { box-shadow: 0 8px 30px rgba(59, 130, 246, .55); }
+body.ocean .seg-btn.active { background: linear-gradient(135deg, #06b6d4, #3b82f6); }
+body.ocean .timer { color: #7dd3fc; }
+
+.game-toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 14px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.game-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.stage-box { position: relative; }
+#stage {
+  width: 100%; display: block; border-radius: 16px;
+  background: #071c40;
+  border: 1px solid rgba(125, 211, 252, .18);
+}
+
+.stage-overlay {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(6, 20, 45, .8); border-radius: 16px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.result-pop { text-align: center; padding: 24px; }
+.result-pop h2 { font-size: 26px; margin: 6px 0 10px; border: none; padding: 0; }
+.result-pop .hint { margin-bottom: 18px; }
+.stars { font-size: 42px; letter-spacing: 8px; color: #fbbf24; text-shadow: 0 0 24px rgba(251,191,36,.5); }
+.stars .dim { color: rgba(255,255,255,.18); text-shadow: none; }
+
+.game-status {
+  display: flex; gap: 10px 22px; flex-wrap: wrap; margin-top: 14px;
+  font-size: 14px; color: var(--muted);
+}
+.status-item b { color: var(--text); font-variant-numeric: tabular-nums; }
+.status-item b.on { color: var(--ok); }
+
+.foot-link { color: #7dd3fc; text-decoration: none; }
+.foot-link:hover { text-decoration: underline; }
+
+@media (max-width: 640px) {
+  .game-toolbar { flex-direction: column; align-items: stretch; }
+  .game-actions { justify-content: center; }
+  .game-actions .btn { flex: 1; justify-content: center; }
+  .stars { font-size: 34px; }
+}
