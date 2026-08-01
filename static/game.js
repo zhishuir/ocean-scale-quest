@@ -13,18 +13,17 @@
   var SEMIS = [0, 2, 4, 5, 7, 9, 11, 9, 7, 5, 4, 2, 0];       // 上行到 xi 再下行回 do
   var NAMES = ["do", "re", "mi", "fa", "sol", "la", "xi", "la", "sol", "fa", "mi", "re", "do"];
   var JIANPU = ["1", "2", "3", "4", "5", "6", "7", "6", "5", "4", "3", "2", "1"];
-  var HOLD_MS = 350;          // 唱准后需要稳住的时长
+  var HOLD_MS = 60;           // 唱准即过：约 1~2 帧即点亮，不拖沓
   var TOL_CENTS = 85;         // 判定"唱准"的音分容差（八度无关）
-  var MIN_RMS = 0.015;        // 低于此音量视为没在唱
-  var MIN_CONF = 0.45;        // 自相关置信度阈值
-  var FMIN = 70, FMAX = 700;  // 基频搜索范围（Hz）
+  var MIN_RMS = 0.008;        // 低于此音量视为没在唱（放宽，麦克风灵敏度差异大）
+  var FMIN = 60, FMAX = 1000;  // 基频搜索范围（Hz），覆盖男低到女高
   var STEP_GAP = 150;         // 相邻海螺的世界坐标间距（px）
   var EMOJI_FONT = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
 
   var $ = function (id) { return document.getElementById(id); };
 
   // ---------------- 状态 ----------------
-  var baseFreq = 196.0;                    // do 的频率（音区选择）
+  var baseFreq = 130.81;                   // do 的频率（音区选择，默认男低 C3）
   var mode = "idle";                       // idle | play | done
   var idx = 0;                             // 当前目标海螺下标
   var holdMs = 0;                          // 连续唱准的累计音频时长（毫秒，按回调帧长累加）
@@ -74,52 +73,77 @@
 
   function noteFreq(i) { return baseFreq * Math.pow(2, SEMIS[i] / 12); }
 
-  /* 归一化自相关测基频，取"第一个足够高的局部极大值"而非全局最大值——
-   * 周期信号在 2 倍、3 倍周期处同样有强相关峰，若直接取全局最大值，
-   * 窗口边界带来的数值噪声足以让某个倍频峰高出基频峰一点点，导致
-   * 误判成低八度/五度等错误音高（曾实测出现过整数倍周期的误判）。
-   * 从最短周期（最高频）向长周期扫描，第一个局部峰必然就是基频。
-   * 不做降采样：2048 点全采样率自相关约 2000 万次乘加/秒，现代设备
-   * 实时跑没有压力，而降采样带来的量化误差正是上述误判的诱因之一。 */
+  /* YIN 基频估计算法 —— 替代简单自相关，解决男低/女高音区倍频误判。
+   *
+   * YIN = 差值函数 + 累积均值归一化 + 阈值挑谷 + 抛物线插值。
+   * 差值函数对幅值变化不敏感（比自相关更鲁棒）；累积均值归一化消除
+   * 倍频/半频假峰（这是自相关在低频男声上最常见的误判源）；抛物线
+   * 插值将周期精度推到亚采样级，±5 音分以内。
+   *
+   * 参考: De Cheveigné & Kawahara (2002), "YIN, a fundamental frequency
+   * estimator for speech and music", JASA 111(4).
+   */
   function detectPitch(x, sr) {
     var i, n = x.length, rms = 0;
     for (i = 0; i < n; i++) rms += x[i] * x[i];
     rms = Math.sqrt(rms / n);
     if (rms < MIN_RMS) return { f0: 0, conf: 0, rms: rms };
 
-    var minLag = Math.max(2, Math.floor(sr / FMAX));
-    var maxLag = Math.min(n - 2, Math.floor(sr / FMIN));
-    var win = n - maxLag;
-    var e0 = 0;
-    for (i = 0; i < win; i++) e0 += x[i] * x[i];
-    if (e0 < 1e-9) return { f0: 0, conf: 0, rms: rms };
+    var tauMax = Math.min(Math.floor(sr / FMIN), Math.floor(n / 2));
+    var tauMin = Math.max(2, Math.floor(sr / FMAX));
+    if (tauMax <= tauMin + 1) return { f0: 0, conf: 0, rms: rms };
 
-    var rs = new Float64Array(maxLag - minLag + 1), lag;
-    for (lag = minLag; lag <= maxLag; lag++) {
-      var s = 0, e1 = 0;
-      for (i = 0; i < win; i++) { s += x[i] * x[i + lag]; e1 += x[i + lag] * x[i + lag]; }
-      rs[lag - minLag] = s / Math.sqrt(e0 * (e1 + 1e-12));
+    // Step 1 — 差值函数 d(tau)
+    var diff = new Float64Array(tauMax + 1);
+    for (var tau = 1; tau <= tauMax; tau++) {
+      var s = 0, limit = n - tau;
+      for (i = 0; i < limit; i++) {
+        var d = x[i] - x[i + tau];
+        s += d * d;
+      }
+      diff[tau] = s;
     }
 
-    var bestIdx = -1, k;
-    for (k = 1; k < rs.length - 1; k++) {
-      if (rs[k] > rs[k - 1] && rs[k] >= rs[k + 1] && rs[k] >= MIN_CONF) { bestIdx = k; break; }
+    // Step 2 & 3 — 累积均值归一化 cmndf
+    var cmndf = new Float64Array(tauMax + 1);
+    cmndf[0] = 1;
+    var cum = 0;
+    for (tau = 1; tau <= tauMax; tau++) {
+      cum += diff[tau];
+      cmndf[tau] = cum > 1e-12 ? diff[tau] * tau / cum : 1;
     }
-    if (bestIdx < 0) {   // 没找到合格的局部峰（比如单调曲线被截断），退回全局最大值
-      var gm = -1;
-      for (k = 0; k < rs.length; k++) if (rs[k] > gm) { gm = rs[k]; bestIdx = k; }
-    }
-    var bestR = rs[bestIdx], bestLag = bestIdx + minLag;
-    if (bestR < MIN_CONF) return { f0: 0, conf: bestR, rms: rms };
 
-    // 峰值抛物线插值
-    var d = 0;
-    if (bestIdx > 0 && bestIdx < rs.length - 1) {
-      var rl = rs[bestIdx - 1], rr = rs[bestIdx + 1];
-      var denom = 2 * (2 * bestR - rl - rr);
-      if (Math.abs(denom) > 1e-9) d = (rl - rr) / denom;
+    // Step 4 — 找第一个低于阈值的谷底（浏览器拾音噪声大，阈值放宽到 0.35）
+    var YIN_THR = 0.35;
+    var bestTau = 0;
+    for (tau = tauMin; tau <= tauMax; tau++) {
+      if (cmndf[tau] < YIN_THR) {
+        while (tau + 1 <= tauMax && cmndf[tau + 1] < cmndf[tau]) tau++;
+        bestTau = tau;
+        break;
+      }
     }
-    return { f0: sr / (bestLag + d), conf: bestR, rms: rms };
+
+    // 退路：找不到谷底则取全局最小，始终返回一个结果（让 centsToTarget 去判断）
+    if (bestTau === 0) {
+      var minVal = Infinity;
+      for (tau = tauMin; tau <= tauMax; tau++) {
+        if (cmndf[tau] < minVal) { minVal = cmndf[tau]; bestTau = tau; }
+      }
+    }
+
+    // Step 6 — 抛物线插值
+    var better = bestTau;
+    if (bestTau > 1 && bestTau < tauMax) {
+      var a = cmndf[bestTau - 1], b = cmndf[bestTau], c = cmndf[bestTau + 1];
+      var denom = a - 2 * b + c;
+      if (Math.abs(denom) > 1e-9) better = bestTau + 0.5 * (a - c) / denom;
+    }
+
+    if (better <= 0) return { f0: 0, conf: 0, rms: rms };
+    var f0 = sr / better;
+    var conf = 1 - Math.min(1, cmndf[bestTau]);
+    return { f0: f0, conf: conf, rms: rms };
   }
 
   /* 与目标的音分偏差，折叠到最近八度（低/高八度唱都算对） */
@@ -519,22 +543,85 @@
     stopMic();
     mode = "done";
     var total = (performance.now() - playStart) / 1000;
-    var avgDev = hitDevs.reduce(function (a, b) { return a + b; }, 0) / hitDevs.length;
+
+    // ---- 统计 ----
+    var n = hitDevs.length;
+    var sum = 0, minD = Infinity, maxD = 0, sumSq = 0;
+    var worstI = 0, bestI = 0;
+    for (var i = 0; i < n; i++) {
+      var d = hitDevs[i];
+      sum += d; sumSq += d * d;
+      if (d < minD) { minD = d; bestI = i; }
+      if (d > maxD) { maxD = d; worstI = i; }
+    }
+    var avgDev = sum / n;
+    var stdDev = Math.sqrt(Math.max(0, sumSq / n - avgDev * avgDev));
     var stars = avgDev <= 25 ? 3 : avgDev <= 50 ? 2 : 1;
 
+    // ---- 等级 ----
+    var gradeLabel, gradeColor;
+    if (avgDev <= 20)      { gradeLabel = "音准大师 · 完美航线"; gradeColor = "#fbbf24"; }
+    else if (avgDev <= 40) { gradeLabel = "唱得很稳 · 继续精进"; gradeColor = "#34d399"; }
+    else if (avgDev <= 65) { gradeLabel = "基础扎实 · 潜力巨大"; gradeColor = "#7dd3fc"; }
+    else                   { gradeLabel = "完成挑战 · 找到感觉"; gradeColor = "#a5b4fc"; }
+
+    // ---- 一致性 ----
+    var consLabel, consTag;
+    if (stdDev <= 15)      { consLabel = "各音表现非常均匀"; consTag = "good"; }
+    else if (stdDev <= 35) { consLabel = "整体较稳，个别音有波动"; consTag = "ok"; }
+    else                   { consLabel = "音准波动较大，需多听示范"; consTag = "warn"; }
+
+    // ---- 诊断建议 ----
+    var advice;
+    if (stars === 3) {
+      advice = "音准控制已达较高水准！下一步可以尝试加快速度、减少犹豫，或者换到另一个音区挑战不同音域的协调感。";
+    } else if (stars === 2) {
+      advice = "音准框架已经建立，但" + NAMES[worstI] + "音（" + JIANPU[worstI] + "）偏差偏大（" + maxD.toFixed(0) + "¢）。建议单独模唱这个音，先听示范 3 秒，心里默唱再开口，用调音器辅助校准。每天 5 分钟定点练习，一周内就会明显改善。";
+    } else {
+      advice = "目前还比较依赖本能发声，音高'听到→唱出'的闭环还需要时间建立。建议先不急着通关：① 多听「完整音阶示范」感受音高走向；② 用调音器 APP 练习 do→sol 五个音，每个音稳住 2 秒；③ 每天练 10 分钟，一周后回来再测会有惊喜。";
+    }
+
+    // ---- 渲染 ----
     $("stars").innerHTML =
       "★★★".slice(0, stars) + '<span class="dim">' + "★★★".slice(stars) + "</span>";
-    $("resultTitle").textContent = ["", "游完全程，继续加油！", "唱得很棒，海豚很开心！", "完美航线，音准大师！"][stars];
+    $("resultTitle").textContent = gradeLabel;
+    $("resultTitle").style.color = gradeColor;
     $("resultDetail").textContent =
-      "用时 " + total.toFixed(1) + " 秒 · 平均音准偏差 " + avgDev.toFixed(0) + " 音分" +
-      (stars === 3 ? "，所有海螺一次点亮！" : stars === 2 ? "，再稳一点就是三星！" : "，多听示范、放慢速度会更准。");
+      "用时 " + total.toFixed(1) + " 秒 · 平均偏差 " + avgDev.toFixed(0) + " 音分 · " + n + "/" + SEMIS.length + " 通关";
+
+    $("reportMini").innerHTML =
+      '<div class="rm-section">' +
+        '<div class="rm-title">🎵 音准分析</div>' +
+        '<div class="rm-row"><span>平均偏差</span><b>' + avgDev.toFixed(0) + ' 音分</b></div>' +
+        '<div class="rm-row"><span>最佳音</span><b>' + NAMES[bestI] + '（' + JIANPU[bestI] + '）+ ' + minD.toFixed(0) + '¢</b></div>' +
+        '<div class="rm-row"><span>最需加强</span><b>' + NAMES[worstI] + '（' + JIANPU[worstI] + '）+ ' + maxD.toFixed(0) + '¢</b></div>' +
+        '<div class="rm-row"><span>稳定性</span><span class="rm-tag ' + consTag + '">' + consLabel + '</span></div>' +
+      '</div>' +
+      '<div class="rm-section">' +
+        '<div class="rm-title">💡 练习建议</div>' +
+        '<div class="rm-advice">' + advice + '</div>' +
+      '</div>';
+
     $("resultOverlay").classList.remove("hidden");
     $("btnPlayText").textContent = "开始挑战";
 
-    // 结算小旋律
-    playNote(baseFreq * 2, 0.18, 0.2, 0);
-    playNote(baseFreq * Math.pow(2, 4 / 12) * 2, 0.18, 0.2, 0.14);
-    playNote(baseFreq * Math.pow(2, 7 / 12) * 2, 0.34, 0.2, 0.28);
+    // ---- 结算旋律（按表现分级） ----
+    if (stars === 3) {
+      // 完整上行音阶 do→do'  triumph
+      [0, 2, 4, 5, 7, 9, 11, 12].forEach(function (s, k) {
+        playNote(baseFreq * Math.pow(2, s / 12) * (k === 7 ? 2 : 1), 0.28, 0.3, k * 0.15);
+      });
+    } else if (stars === 2) {
+      // 主和弦分解 (do-mi-sol-do)
+      [0, 4, 7, 12].forEach(function (s, k) {
+        playNote(baseFreq * Math.pow(2, s / 12) * 2, 0.3, 0.3, k * 0.18);
+      });
+    } else {
+      // 上行三音鼓励 (do-re-mi)
+      [0, 2, 4].forEach(function (s, k) {
+        playNote(baseFreq * Math.pow(2, s / 12), 0.32, 0.28, k * 0.22);
+      });
+    }
   }
 
   // ---------------- 控制 ----------------

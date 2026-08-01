@@ -102,22 +102,76 @@ def _runs(mask: np.ndarray):
 # ---------------------------------------------------------------- 特征提取
 
 def pitch_track(frames: np.ndarray, sr: int):
-    """FFT 自相关法逐帧估计基频，返回 (f0数组, 有清晰音高的布尔掩码)。"""
-    size = frames.shape[1]
-    win = frames * np.hanning(size)
-    nfft = 2 * size
-    spec = np.fft.rfft(win, nfft)
-    acf = np.fft.irfft(np.abs(spec) ** 2, nfft)[:, :size]
-    acf0 = acf[:, 0] + 1e-12
+    """YIN 算法逐帧估计基频，返回 (f0数组, 有清晰音高的布尔掩码)。
 
-    lag_lo = max(2, int(sr / config.PITCH["fmax"]))
-    lag_hi = min(size - 1, int(sr / config.PITCH["fmin"]))
-    seg = acf[:, lag_lo: lag_hi + 1]
-    best = seg.argmax(axis=1) + lag_lo
-    conf = seg.max(axis=1) / acf0
+    YIN = 差值函数 + 累积均值归一化 + 阈值挑谷 + 抛物线插值。
+    比 FFT 自相关对倍频/半频误判更鲁棒，尤其适合男低/女高音区
+    容易出现的"低八度/高五度"误检问题。
 
-    f0 = sr / best.astype(np.float64)
-    pitched = conf > config.PITCH["conf_threshold"]
+    参考: De Cheveigné & Kawahara (2002), JASA 111(4).
+    """
+    n_frames, size = frames.shape
+    f0 = np.zeros(n_frames, dtype=np.float64)
+    pitched = np.zeros(n_frames, dtype=bool)
+
+    fmin = config.PITCH["fmin"]
+    fmax = config.PITCH["fmax"]
+    yin_thr = 0.35       # YIN 绝对阈值（浏览器拾音噪声大，比论文推荐值放宽）
+
+    for i in range(n_frames):
+        x = frames[i].astype(np.float64)
+        rms = float(np.sqrt(np.mean(x ** 2)))
+        if rms < 0.005:                    # 能量过低，判为静音
+            continue
+
+        tau_max = min(int(sr / fmin), size // 2)
+        tau_min = max(2, int(sr / fmax))
+        if tau_max <= tau_min + 1:
+            continue
+
+        # Step 1 — 差值函数 d(tau)
+        diff = np.zeros(tau_max + 1, dtype=np.float64)
+        for tau in range(1, tau_max + 1):
+            d = x[tau:] - x[:size - tau]
+            diff[tau] = float(np.dot(d, d))
+
+        # Step 2 & 3 — 累积均值归一化差值函数
+        cmndf = np.ones(tau_max + 1, dtype=np.float64)
+        cum = 0.0
+        for tau in range(1, tau_max + 1):
+            cum += diff[tau]
+            cmndf[tau] = diff[tau] * tau / (cum + 1e-12) if cum > 0 else 1.0
+
+        # Step 4 — 绝对阈值：找第一个低于阈值的谷底
+        best_tau = 0
+        for tau in range(tau_min, tau_max + 1):
+            if cmndf[tau] < yin_thr:
+                while tau + 1 <= tau_max and cmndf[tau + 1] < cmndf[tau]:
+                    tau += 1
+                best_tau = tau
+                break
+
+        # 退路：取全局最小，始终返回结果
+        if best_tau == 0:
+            seg = cmndf[tau_min:tau_max + 1]
+            best_tau = int(np.argmin(seg)) + tau_min
+
+        # Step 6 — 抛物线插值提高精度
+        if 1 <= best_tau < tau_max:
+            a = cmndf[best_tau - 1]
+            b = cmndf[best_tau]
+            c = cmndf[best_tau + 1]
+            denom = a - 2 * b + c
+            better = best_tau + 0.5 * (a - c) / denom if abs(denom) > 1e-9 else float(best_tau)
+        else:
+            better = float(best_tau)
+
+        if better <= 0:
+            continue
+
+        f0[i] = float(sr / better)
+        pitched[i] = True
+
     return f0, pitched
 
 
